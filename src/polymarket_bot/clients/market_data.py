@@ -70,8 +70,7 @@ class MarketDataClient:
                     outcomes = json.loads(outcomes) if outcomes else []
                 if len(tokens) < 2:
                     continue
-                up_idx = 0 if outcomes and outcomes[0] == "Up" else 1
-                down_idx = 1 - up_idx
+                up_idx, down_idx = self._resolve_up_down_indices(outcomes)
                 result = MarketInfo(
                     question=question,
                     condition_id=market.get("conditionId", ""),
@@ -82,6 +81,13 @@ class MarketDataClient:
                 )
                 self._market_cache = result
                 self._market_cache_ts = now
+                LOG.info(
+                    "MARKET_SELECTED question='%s' up_token=%s down_token=%s tick=%s",
+                    result.question,
+                    result.up_token,
+                    result.down_token,
+                    result.tick_size,
+                )
                 return result
         except Exception as exc:
             LOG.warning("market_discovery_failed: %s", exc)
@@ -197,3 +203,16 @@ class MarketDataClient:
         if slug.startswith(TARGET_SLUG_PREFIX):
             return True
         return bool(TARGET_QUESTION_PATTERN.search(question or ""))
+
+    @staticmethod
+    def _resolve_up_down_indices(outcomes: list) -> tuple[int, int]:
+        if not outcomes:
+            return 0, 1
+        normalized = [str(item).strip().lower() for item in outcomes]
+        try:
+            up_idx = normalized.index("up")
+            down_idx = normalized.index("down")
+            return up_idx, down_idx
+        except ValueError:
+            # Fallback to first two outcomes if labels are unexpected.
+            return 0, 1 if len(outcomes) > 1 else 0

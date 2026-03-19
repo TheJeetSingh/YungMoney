@@ -100,7 +100,7 @@ class LifecycleEngine:
         if previous_candle.active and previous_candle.market is not None:
             candle_pnl = self.state.bankroll - self._candle_start_bankroll
             LOG.info(
-                "CANDLE_RESULT market='%s' buys=%s sells=%s pnl=%s bankroll=%s",
+                "CANDLE RESULT | market='%s' | buys=%s sells=%s | pnl=%s | bankroll=%s",
                 previous_candle.market.question,
                 self._candle_buy_count,
                 self._candle_sell_count,
@@ -136,7 +136,7 @@ class LifecycleEngine:
         self.state.candle.ml_confidence = prediction.confidence
         await self.market_data.start_market_ws(market)
         LOG.info(
-            "new_candle market=%s start=%s ml_direction=%s ml_conf=%s",
+            "NEW CANDLE | market='%s' | start=%s | model=%s | confidence=%s",
             market.question,
             datetime.fromtimestamp(candle_start, tz=timezone.utc).isoformat(),
             self.state.candle.ml_direction,
@@ -179,12 +179,12 @@ class LifecycleEngine:
 
             if self.drawdown.should_pause(self.state.bankroll):
                 self.execution.cancel_all()
-                LOG.error("daily_drawdown_guard_triggered bankroll=%s", self.state.bankroll)
+                LOG.error("RISK STOP | daily drawdown hit | bankroll=%s", round(self.state.bankroll, 4))
                 continue
             if self.state.bankroll < self._min_equity_floor:
                 self.execution.cancel_all()
                 LOG.error(
-                    "equity_floor_triggered bankroll=%s floor=%s",
+                    "RISK STOP | equity floor hit | bankroll=%s floor=%s",
                     round(self.state.bankroll, 4),
                     round(self._min_equity_floor, 4),
                 )
@@ -271,7 +271,7 @@ class LifecycleEngine:
             self.state.bankroll -= fill_cost
             self._candle_buy_count += 1
             LOG.info(
-                "ACTION BUY %s price=%s size=%s cost=%s bankroll=%s",
+                "ACTION BUY | %s | price=%s size=%s cost=%s | bankroll=%s",
                 side_name.upper(),
                 state.open_bid.price,
                 state.open_bid.size,
@@ -288,7 +288,7 @@ class LifecycleEngine:
             self.state.bankroll += state.open_ask.price * sell_size
             self._candle_sell_count += 1
             LOG.info(
-                "ACTION SELL %s sold=%s bought_avg=%s size=%s spread=%s pnl=%s bankroll=%s",
+                "ACTION SELL | %s | sold=%s avg_buy=%s size=%s spread=%s pnl=%s | bankroll=%s",
                 side_name.upper(),
                 state.open_ask.price,
                 round(avg, 4),
@@ -392,15 +392,19 @@ class LifecycleEngine:
         up_ask = round(self.market_data.books.up.best_ask, 4)
         down_bid = round(self.market_data.books.down.best_bid, 4)
         down_ask = round(self.market_data.books.down.best_ask, 4)
+        up_mid = round(self._mid_price(self.market_data.books.up.best_bid, self.market_data.books.up.best_ask), 4)
+        down_mid = round(self._mid_price(self.market_data.books.down.best_bid, self.market_data.books.down.best_ask), 4)
         LOG.info(
-            "STATUS t_left=%ss model=%s conf=%s UP=%s/%s DOWN=%s/%s inv_up=%s inv_down=%s bankroll=%s",
+            "STATUS | t_left=%ss | model=%s conf=%s | UP bid/ask/mid=%s/%s/%s | DOWN bid/ask/mid=%s/%s/%s | inv_up=%s inv_down=%s | bankroll=%s",
             remaining,
             candle.ml_direction,
             round(candle.ml_confidence, 3),
             up_bid,
             up_ask,
+            up_mid,
             down_bid,
             down_ask,
+            down_mid,
             round(self.state.up_state.position, 4),
             round(self.state.down_state.position, 4),
             round(self.state.bankroll, 4),

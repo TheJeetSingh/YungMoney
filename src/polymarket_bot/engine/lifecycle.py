@@ -394,11 +394,23 @@ class LifecycleEngine:
         down_ask = round(self.market_data.books.down.best_ask, 4)
         up_mid = round(self._mid_price(self.market_data.books.up.best_bid, self.market_data.books.up.best_ask), 4)
         down_mid = round(self._mid_price(self.market_data.books.down.best_bid, self.market_data.books.down.best_ask), 4)
+        up_buy = self.market_data.fetch_price(candle.market.up_token, "buy")
+        up_sell = self.market_data.fetch_price(candle.market.up_token, "sell")
+        down_buy = self.market_data.fetch_price(candle.market.down_token, "buy")
+        down_sell = self.market_data.fetch_price(candle.market.down_token, "sell")
+        up_buy_str = f"{up_buy:.4f}" if up_buy is not None else "n/a"
+        up_sell_str = f"{up_sell:.4f}" if up_sell is not None else "n/a"
+        down_buy_str = f"{down_buy:.4f}" if down_buy is not None else "n/a"
+        down_sell_str = f"{down_sell:.4f}" if down_sell is not None else "n/a"
         LOG.info(
-            "STATUS | t_left=%ss | model=%s conf=%s | UP bid/ask/mid=%s/%s/%s | DOWN bid/ask/mid=%s/%s/%s | inv_up=%s inv_down=%s | bankroll=%s",
+            "STATUS | t_left=%ss | model=%s conf=%s | UI UP buy/sell=%s/%s DOWN buy/sell=%s/%s | BOOK UP bid/ask/mid=%s/%s/%s DOWN bid/ask/mid=%s/%s/%s | inv_up=%s inv_down=%s | bankroll=%s",
             remaining,
             candle.ml_direction,
             round(candle.ml_confidence, 3),
+            up_buy_str,
+            up_sell_str,
+            down_buy_str,
+            down_sell_str,
             up_bid,
             up_ask,
             up_mid,

@@ -171,6 +171,24 @@ class MarketDataClient:
             LOG.warning("fetch_book_failed token=%s error=%s", token_id, exc)
             return BookState()
 
+    def fetch_price(self, token_id: str, side: str) -> float | None:
+        """Fetch best executable CLOB price.
+
+        side='buy'  -> best ask (what you'd pay to buy now)
+        side='sell' -> best bid (what you'd receive to sell now)
+        """
+        try:
+            response = self.session.get(
+                f"{self.clob_host}/price",
+                params={"token_id": token_id, "side": side},
+                timeout=3,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return float(payload.get("price"))
+        except Exception:
+            return None
+
     def refresh_books(self, market: MarketInfo) -> TokenBooks:
         self.books.up = self.fetch_book(market.up_token)
         self.books.down = self.fetch_book(market.down_token)

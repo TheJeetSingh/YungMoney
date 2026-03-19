@@ -58,6 +58,7 @@ class LifecycleEngine:
         self.breaker = CircuitBreaker(settings.max_consecutive_post_fails)
         self.drawdown = DrawdownGuard(settings.bankroll_usd, settings.max_daily_drawdown_pct)
         self._shutdown = False
+        self._seen_trade_ids: set[str] = set()
 
     async def run(self) -> None:
         LOG.info("engine_started mode=%s", self.settings.bot_mode)
@@ -151,6 +152,7 @@ class LifecycleEngine:
 
             await self._quote_side("up")
             await self._quote_side("down")
+            self._log_live_trade_events(candle.market.up_token, candle.market.down_token)
 
     async def _quote_side(self, side_name: str) -> None:
         candle = self.state.candle
@@ -177,11 +179,11 @@ class LifecycleEngine:
             return
 
         token_id = candle.market.up_token if side_name == "up" else candle.market.down_token
-        await self._replace_quotes(side_state, token_id, decision)
+        await self._replace_quotes(side_name, side_state, token_id, decision)
         if self.execution.paper:
-            self._simulate_paper_fills(side_state, book, decision)
+            self._simulate_paper_fills(side_name, side_state, book, decision)
 
-    async def _replace_quotes(self, state: SideState, token_id: str, decision: QuoteDecision) -> None:
+    async def _replace_quotes(self, side_name: str, state: SideState, token_id: str, decision: QuoteDecision) -> None:
         if state.open_bid:
             self.execution.cancel_order(state.open_bid.order_id)
         if state.open_ask:
@@ -198,6 +200,14 @@ class LifecycleEngine:
             ask_quote.order_id = ask_result.order_id
             state.open_bid = bid_quote
             state.open_ask = ask_quote
+            LOG.info(
+                "QUOTE_POSTED %s bid=%s ask=%s bid_size=%s ask_size=%s",
+                side_name.upper(),
+                decision.bid_price,
+                decision.ask_price,
+                decision.bid_size,
+                decision.ask_size,
+            )
             return
 
         self.breaker.mark_post_failure()
@@ -205,12 +215,19 @@ class LifecycleEngine:
         state.open_ask = None
         LOG.error("quote_post_failed bid_ok=%s ask_ok=%s", bid_result.ok, ask_result.ok)
 
-    def _simulate_paper_fills(self, state: SideState, book, decision: QuoteDecision) -> None:
+    def _simulate_paper_fills(self, side_name: str, state: SideState, book, decision: QuoteDecision) -> None:
         if state.open_bid and book.best_ask <= decision.bid_price:
             fill_cost = decision.bid_price * decision.bid_size
             state.position += decision.bid_size
             state.cost_basis += fill_cost
             self.state.bankroll -= fill_cost
+            LOG.info(
+                "BUY_FILLED %s price=%s size=%s cost=%s",
+                side_name.upper(),
+                decision.bid_price,
+                decision.bid_size,
+                round(fill_cost, 4),
+            )
             state.open_bid = None
         if state.open_ask and state.position > 0 and book.best_bid >= decision.ask_price:
             sell_size = min(decision.ask_size, state.position)
@@ -219,6 +236,15 @@ class LifecycleEngine:
             state.position -= sell_size
             state.cost_basis = max(0.0, state.cost_basis - avg * sell_size)
             self.state.bankroll += decision.ask_price * sell_size + pnl
+            LOG.info(
+                "SELL_FILLED %s sold=%s bought_avg=%s size=%s spread=%s pnl=%s",
+                side_name.upper(),
+                decision.ask_price,
+                round(avg, 4),
+                sell_size,
+                round(decision.ask_price - avg, 4),
+                round(pnl, 4),
+            )
             state.open_ask = None
 
     async def _inventory_loop(self) -> None:
@@ -276,3 +302,27 @@ class LifecycleEngine:
             ret = abs(logit - self.state.last_mid_down)
             self.state.sigma_logit_down = alpha * ret + (1 - alpha) * self.state.sigma_logit_down
             self.state.last_mid_down = logit
+
+    def _log_live_trade_events(self, up_token: str, down_token: str) -> None:
+        if self.execution.paper:
+            return
+        for trade in self.execution.get_trades():
+            trade_id = str(trade.get("id") or trade.get("tradeID") or trade.get("trade_id") or "")
+            if not trade_id or trade_id in self._seen_trade_ids:
+                continue
+            self._seen_trade_ids.add(trade_id)
+            token_id = str(trade.get("asset_id") or trade.get("token_id") or "")
+            if token_id not in {up_token, down_token}:
+                continue
+            side = str(trade.get("side", ""))
+            price = trade.get("price", "")
+            size = trade.get("size", "")
+            label = "UP" if token_id == up_token else "DOWN"
+            LOG.info(
+                "LIVE_TRADE %s side=%s price=%s size=%s trade_id=%s",
+                label,
+                side,
+                price,
+                size,
+                trade_id,
+            )

@@ -111,3 +111,17 @@ class ClobExecutionClient:
             return method() or []
         except Exception:
             return []
+
+    def get_trades(self) -> list[dict[str, Any]]:
+        if self.paper or self._client is None:
+            return []
+        method = getattr(self._client, "get_trades", None)
+        if method is None:
+            return []
+        try:
+            trades = method() or []
+            if isinstance(trades, list):
+                return trades
+            return []
+        except Exception:
+            return []

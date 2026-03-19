@@ -1,0 +1,36 @@
+{
+  "family": "polymarket-bot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/polymarketBotTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "polymarket-bot",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/polymarket-bot:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/polymarket-bot",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        { "name": "BOT_MODE", "value": "live" },
+        { "name": "SIGNATURE_TYPE", "value": "1" },
+        { "name": "CHAIN_ID", "value": "137" }
+      ],
+      "secrets": [
+        { "name": "PRIVATE_KEY", "valueFrom": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/polymarket-bot/private-key" },
+        { "name": "FUNDER_ADDRESS", "valueFrom": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/polymarket-bot/funder-address" },
+        { "name": "API_KEY", "valueFrom": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/polymarket-bot/api-key" },
+        { "name": "SECRET", "valueFrom": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/polymarket-bot/secret" },
+        { "name": "PASSPHRASE", "valueFrom": "arn:aws:ssm:<REGION>:<ACCOUNT_ID>:parameter/polymarket-bot/passphrase" }
+      ]
+    }
+  ]
+}

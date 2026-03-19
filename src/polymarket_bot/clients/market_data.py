@@ -38,9 +38,11 @@ class MarketDataClient:
         self.books = TokenBooks(up=BookState(), down=BookState(), ws_connected=False)
         self._ws_task: asyncio.Task | None = None
         self._stop = False
+        self._server_time_offset_sec = 0.0
+        self._last_time_sync_ts = 0.0
 
     def find_active_btc_5m_market(self) -> MarketInfo | None:
-        now = time.time()
+        now = self.get_exchange_time()
         if self._market_cache and now - self._market_cache_ts < 20:
             return self._market_cache
         try:
@@ -144,6 +146,33 @@ class MarketDataClient:
         except Exception as exc:
             LOG.warning("market_discovery_failed: %s", exc)
         return None
+
+    def sync_server_time(self, force: bool = False) -> None:
+        local_now = time.time()
+        if not force and (local_now - self._last_time_sync_ts) < 30:
+            return
+        try:
+            response = self.session.get(f"{self.clob_host}/time", timeout=2)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                # Defensive shape handling in case API wraps value.
+                if "time" in payload:
+                    server_ts = float(payload["time"])
+                elif "timestamp" in payload:
+                    server_ts = float(payload["timestamp"])
+                else:
+                    server_ts = float(next(iter(payload.values())))
+            else:
+                server_ts = float(payload)
+            self._server_time_offset_sec = server_ts - local_now
+            self._last_time_sync_ts = local_now
+        except Exception as exc:
+            LOG.warning("server_time_sync_failed: %s", exc)
+
+    def get_exchange_time(self) -> float:
+        self.sync_server_time(force=False)
+        return time.time() + self._server_time_offset_sec
 
     def fetch_book(self, token_id: str) -> BookState:
         try:

@@ -15,6 +15,9 @@ from polymarket_bot.ml.legacy_features import engineer_features, get_segment_id
 
 LOG = logging.getLogger(__name__)
 
+# Legacy model compatibility: these segment models were trained on Kraken 5m OHLCV.
+# Polymarket settlement may reference Chainlink, but swapping this feed would change
+# feature distributions and invalidate model behavior.
 KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
 
 

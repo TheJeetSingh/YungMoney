@@ -73,6 +73,7 @@ class LifecycleEngine:
         self._candle_sell_count = 0
         self._candle_start_bankroll = resolved_start_bankroll
         self._last_risk_log_ts = 0.0
+        self._last_no_fill_log_ts = 0.0
 
     async def run(self) -> None:
         LOG.info("engine_started mode=%s", self.settings.bot_mode)
@@ -88,7 +89,7 @@ class LifecycleEngine:
     async def _candle_loop(self) -> None:
         last_candle = 0
         while not self._shutdown:
-            now = int(time.time())
+            now = int(self.market_data.get_exchange_time())
             candle_start = (now // CANDLE_SECONDS) * CANDLE_SECONDS
             candle_end = candle_start + CANDLE_SECONDS
             if candle_start != last_candle:
@@ -152,9 +153,12 @@ class LifecycleEngine:
             if not candle.active or candle.market is None:
                 continue
 
-            now = time.time()
+            now = self.market_data.get_exchange_time()
             elapsed = now - candle.candle_start
-            if elapsed >= self.settings.exit_deadline_sec:
+            if elapsed < self.settings.trade_start_sec:
+                self._maybe_log_status(candle)
+                continue
+            if elapsed >= self.settings.trade_stop_sec:
                 await self._flatten_positions()
                 continue
 
@@ -204,7 +208,10 @@ class LifecycleEngine:
 
         self._update_sigma(side_name, mid)
         sigma = self.state.sigma_logit_up if side_name == "up" else self.state.sigma_logit_down
-        time_remaining = max(0.01, (self.settings.exit_deadline_sec - (time.time() - candle.candle_start)) / CANDLE_SECONDS)
+        time_remaining = max(
+            0.01,
+            (self.settings.trade_stop_sec - (self.market_data.get_exchange_time() - candle.candle_start)) / CANDLE_SECONDS,
+        )
         decision = self.strategy.compute_quotes(
             mid_price=mid,
             bankroll=self.state.bankroll,
@@ -272,6 +279,7 @@ class LifecycleEngine:
     def _simulate_paper_fills(self, side_name: str, state: SideState, book, decision: QuoteDecision) -> None:
         if not self._book_is_sane(book):
             return
+        had_fill = False
         if state.open_bid and book.best_ask <= state.open_bid.price:
             fill_cost = state.open_bid.price * state.open_bid.size
             if fill_cost > self.state.bankroll:
@@ -289,6 +297,7 @@ class LifecycleEngine:
                 round(self.state.bankroll, 4),
             )
             state.open_bid = None
+            had_fill = True
         if state.open_ask and state.position > 0 and book.best_bid >= state.open_ask.price:
             sell_size = min(state.open_ask.size, state.position)
             avg = state.cost_basis / state.position if state.position > 0 else state.open_ask.price
@@ -308,6 +317,9 @@ class LifecycleEngine:
                 round(self.state.bankroll, 4),
             )
             state.open_ask = None
+            had_fill = True
+        if not had_fill:
+            self._maybe_log_no_fill(side_name, state, book)
 
     async def _inventory_loop(self) -> None:
         while not self._shutdown:
@@ -392,12 +404,20 @@ class LifecycleEngine:
             )
 
     def _maybe_log_status(self, candle: CandleState) -> None:
-        now = time.time()
+        now = self.market_data.get_exchange_time()
         if now - self._last_status_log_ts < self._status_log_seconds:
             return
         self._last_status_log_ts = now
         elapsed = int(now - candle.candle_start)
-        remaining = max(0, self.settings.exit_deadline_sec - elapsed)
+        candle_remaining = max(0, candle.candle_end - int(now))
+        starts_in = max(0, self.settings.trade_start_sec - elapsed)
+        trade_remaining = max(0, self.settings.trade_stop_sec - elapsed)
+        if elapsed < self.settings.trade_start_sec:
+            phase = "PRE_WINDOW"
+        elif elapsed < self.settings.trade_stop_sec:
+            phase = "ACTIVE"
+        else:
+            phase = "POST_WINDOW"
         up_bid = round(self.market_data.books.up.best_bid, 4)
         up_ask = round(self.market_data.books.up.best_ask, 4)
         down_bid = round(self.market_data.books.down.best_bid, 4)
@@ -413,8 +433,11 @@ class LifecycleEngine:
         down_buy_str = f"{down_buy:.4f}" if down_buy is not None else "n/a"
         down_sell_str = f"{down_sell:.4f}" if down_sell is not None else "n/a"
         LOG.info(
-            "STATUS | t_left=%ss | model=%s conf=%s | UI UP buy/sell=%s/%s DOWN buy/sell=%s/%s | BOOK UP bid/ask/mid=%s/%s/%s DOWN bid/ask/mid=%s/%s/%s | inv_up=%s inv_down=%s | bankroll=%s",
-            remaining,
+            "STATUS | candle_t_left=%ss phase=%s starts_in=%ss trade_t_left=%ss | model=%s conf=%s | UI UP buy/sell=%s/%s DOWN buy/sell=%s/%s | BOOK UP bid/ask/mid=%s/%s/%s DOWN bid/ask/mid=%s/%s/%s | inv_up=%s inv_down=%s | bankroll=%s",
+            candle_remaining,
+            phase,
+            starts_in,
+            trade_remaining,
             candle.ml_direction,
             round(candle.ml_confidence, 3),
             up_buy_str,
@@ -431,6 +454,27 @@ class LifecycleEngine:
             round(self.state.down_state.position, 4),
             round(self.state.bankroll, 4),
         )
+
+    def _maybe_log_no_fill(self, side_name: str, state: SideState, book) -> None:
+        now = time.time()
+        if now - self._last_no_fill_log_ts < self._status_log_seconds:
+            return
+        self._last_no_fill_log_ts = now
+        reasons = []
+        if state.open_bid:
+            gap = round(book.best_ask - state.open_bid.price, 4)
+            if gap > 0:
+                reasons.append(f"buy_not_hit gap_to_ask={gap}")
+        if state.open_ask:
+            if state.position <= 0:
+                reasons.append("no_inventory_to_sell")
+            else:
+                gap = round(state.open_ask.price - book.best_bid, 4)
+                if gap > 0:
+                    reasons.append(f"sell_not_hit gap_to_bid={gap}")
+        if not reasons:
+            reasons.append("awaiting_matching_flow")
+        LOG.info("NO_FILL | %s | %s", side_name.upper(), "; ".join(reasons))
 
     @staticmethod
     def _quantize_price(price: float, tick_size: str, direction: str) -> float:

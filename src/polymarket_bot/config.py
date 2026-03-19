@@ -22,6 +22,8 @@ class Settings:
     quote_refresh_ms: int
     max_inventory: float
     exit_deadline_sec: int
+    trade_start_sec: int
+    trade_stop_sec: int
     max_daily_drawdown_pct: float
     max_consecutive_post_fails: int
     stale_data_seconds: int
@@ -56,6 +58,8 @@ def load_settings() -> Settings:
         quote_refresh_ms=int(_get_env("QUOTE_REFRESH_MS", "500")),
         max_inventory=float(_get_env("MAX_INVENTORY", "100")),
         exit_deadline_sec=int(_get_env("EXIT_DEADLINE_SEC", "240")),
+        trade_start_sec=int(_get_env("TRADE_START_SEC", "60")),
+        trade_stop_sec=int(_get_env("TRADE_STOP_SEC", _get_env("EXIT_DEADLINE_SEC", "210"))),
         max_daily_drawdown_pct=float(_get_env("MAX_DAILY_DRAWDOWN_PCT", "0.20")),
         max_consecutive_post_fails=int(_get_env("MAX_CONSECUTIVE_POST_FAILS", "8")),
         stale_data_seconds=int(_get_env("STALE_DATA_SECONDS", "5")),
@@ -72,6 +76,10 @@ def validate_settings(settings: Settings) -> None:
         raise ValueError("CHAIN_ID must be 137 for Polygon mainnet.")
     if settings.bot_mode.lower() not in {"paper", "live"}:
         raise ValueError("BOT_MODE must be either 'paper' or 'live'.")
+    if settings.trade_start_sec < 0 or settings.trade_start_sec >= 300:
+        raise ValueError("TRADE_START_SEC must be in [0, 299].")
+    if settings.trade_stop_sec <= settings.trade_start_sec or settings.trade_stop_sec > 300:
+        raise ValueError("TRADE_STOP_SEC must be in (TRADE_START_SEC, 300].")
     if settings.is_live:
         if not settings.private_key:
             raise ValueError("PRIVATE_KEY is required for live mode.")

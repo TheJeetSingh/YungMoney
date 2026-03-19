@@ -12,7 +12,6 @@ class QuoteParams:
     gamma: float = 0.10
     k: float = 1.5
     max_inventory: float = 100.0
-    base_notional_usd: float = 25.0
     ml_bias_factor: float = 0.05
 
 
@@ -41,6 +40,7 @@ class AvellanedaStoikov:
         self,
         *,
         mid_price: float,
+        bankroll: float,
         inventory: float,
         sigma_logit: float,
         time_remaining: float,
@@ -67,11 +67,18 @@ class AvellanedaStoikov:
 
         bid_price = self.sigmoid(reservation - half_spread)
         ask_price = self.sigmoid(reservation + half_spread)
-        bid_price = max(p.min_price, min(0.49, round(bid_price, 4)))
-        ask_price = min(p.max_price, max(0.51, round(ask_price, 4)))
+        bid_price = max(p.min_price, min(p.max_price, round(bid_price, 4)))
+        ask_price = max(p.min_price, min(p.max_price, round(ask_price, 4)))
+        if ask_price <= bid_price:
+            ask_price = min(p.max_price, round(bid_price + p.min_spread, 4))
+        if (ask_price - bid_price) < p.min_spread:
+            ask_price = min(p.max_price, round(bid_price + p.min_spread, 4))
+            if ask_price <= bid_price:
+                bid_price = max(p.min_price, round(ask_price - p.min_spread, 4))
 
         inv_scale = max(0.2, 1.0 - abs(inventory) / max(p.max_inventory, 1.0))
-        base_size = max(5.0, p.base_notional_usd / max(mid_price, 0.01))
+        # Legacy sizing behavior from hw-utils-archive: bankroll-proportional size with floor/cap.
+        base_size = max(5.0, min(30.0, bankroll * 0.05 / max(mid_price, 0.01)))
         size = max(5.0, round(base_size * inv_scale, 2))
         bid_size = size
         ask_size = size

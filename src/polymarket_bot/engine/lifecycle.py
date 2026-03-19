@@ -210,6 +210,7 @@ class LifecycleEngine:
         time_remaining = max(0.01, (self.settings.exit_deadline_sec - (time.time() - candle.candle_start)) / CANDLE_SECONDS)
         decision = self.strategy.compute_quotes(
             mid_price=mid,
+            bankroll=self.state.bankroll,
             inventory=side_state.position,
             sigma_logit=sigma,
             time_remaining=time_remaining,

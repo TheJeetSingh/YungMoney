@@ -27,6 +27,7 @@ class Settings:
     stale_data_seconds: int
     market_tag: str
     min_equity_floor_pct: float
+    status_log_seconds: int
 
     @property
     def is_live(self) -> bool:
@@ -60,6 +61,7 @@ def load_settings() -> Settings:
         stale_data_seconds=int(_get_env("STALE_DATA_SECONDS", "5")),
         market_tag=_get_env("MARKET_TAG", "crypto"),
         min_equity_floor_pct=float(_get_env("MIN_EQUITY_FLOOR_PCT", "0.75")),
+        status_log_seconds=int(_get_env("STATUS_LOG_SECONDS", "5")),
     )
 
 

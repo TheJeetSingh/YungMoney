@@ -67,6 +67,11 @@ class LifecycleEngine:
         self._shutdown = False
         self._seen_trade_ids: set[str] = set()
         self._min_equity_floor = resolved_start_bankroll * settings.min_equity_floor_pct
+        self._status_log_seconds = max(1, settings.status_log_seconds)
+        self._last_status_log_ts = 0.0
+        self._candle_buy_count = 0
+        self._candle_sell_count = 0
+        self._candle_start_bankroll = resolved_start_bankroll
 
     async def run(self) -> None:
         LOG.info("engine_started mode=%s", self.settings.bot_mode)
@@ -91,6 +96,17 @@ class LifecycleEngine:
             await asyncio.sleep(0.5)
 
     async def _on_new_candle(self, candle_start: int, candle_end: int) -> None:
+        previous_candle = self.state.candle
+        if previous_candle.active and previous_candle.market is not None:
+            candle_pnl = self.state.bankroll - self._candle_start_bankroll
+            LOG.info(
+                "CANDLE_RESULT market='%s' buys=%s sells=%s pnl=%s bankroll=%s",
+                previous_candle.market.question,
+                self._candle_buy_count,
+                self._candle_sell_count,
+                round(candle_pnl, 4),
+                round(self.state.bankroll, 4),
+            )
         self.execution.cancel_all()
         market = self.market_data.find_active_btc_5m_market()
         if market is None:
@@ -111,6 +127,9 @@ class LifecycleEngine:
         self.state.sigma_logit_down = 0.1
         self.state.last_mid_up = None
         self.state.last_mid_down = None
+        self._candle_buy_count = 0
+        self._candle_sell_count = 0
+        self._candle_start_bankroll = self.state.bankroll
         self.market_data.refresh_books(market)
         prediction = self.predictor.predict_for_candle(candle_start)
         self.state.candle.ml_direction = prediction.direction
@@ -174,6 +193,7 @@ class LifecycleEngine:
             await self._quote_side("up")
             await self._quote_side("down")
             self._log_live_trade_events(candle.market.up_token, candle.market.down_token)
+            self._maybe_log_status(candle)
 
     async def _quote_side(self, side_name: str) -> None:
         candle = self.state.candle
@@ -236,14 +256,6 @@ class LifecycleEngine:
             ask_quote.order_id = ask_result.order_id
             state.open_bid = bid_quote
             state.open_ask = ask_quote
-            LOG.info(
-                "QUOTE_POSTED %s bid=%s ask=%s bid_size=%s ask_size=%s",
-                side_name.upper(),
-                bid_price,
-                ask_price,
-                decision.bid_size,
-                decision.ask_size,
-            )
             return
 
         self.breaker.mark_post_failure()
@@ -252,34 +264,38 @@ class LifecycleEngine:
         LOG.error("quote_post_failed bid_ok=%s ask_ok=%s", bid_result.ok, ask_result.ok)
 
     def _simulate_paper_fills(self, side_name: str, state: SideState, book, decision: QuoteDecision) -> None:
-        if state.open_bid and book.best_ask <= decision.bid_price:
-            fill_cost = decision.bid_price * decision.bid_size
-            state.position += decision.bid_size
+        if state.open_bid and book.best_ask <= state.open_bid.price:
+            fill_cost = state.open_bid.price * state.open_bid.size
+            state.position += state.open_bid.size
             state.cost_basis += fill_cost
             self.state.bankroll -= fill_cost
+            self._candle_buy_count += 1
             LOG.info(
-                "BUY_FILLED %s price=%s size=%s cost=%s",
+                "ACTION BUY %s price=%s size=%s cost=%s bankroll=%s",
                 side_name.upper(),
-                decision.bid_price,
-                decision.bid_size,
+                state.open_bid.price,
+                state.open_bid.size,
                 round(fill_cost, 4),
+                round(self.state.bankroll, 4),
             )
             state.open_bid = None
-        if state.open_ask and state.position > 0 and book.best_bid >= decision.ask_price:
-            sell_size = min(decision.ask_size, state.position)
-            avg = state.cost_basis / state.position if state.position > 0 else decision.ask_price
-            pnl = (decision.ask_price - avg) * sell_size
+        if state.open_ask and state.position > 0 and book.best_bid >= state.open_ask.price:
+            sell_size = min(state.open_ask.size, state.position)
+            avg = state.cost_basis / state.position if state.position > 0 else state.open_ask.price
+            pnl = (state.open_ask.price - avg) * sell_size
             state.position -= sell_size
             state.cost_basis = max(0.0, state.cost_basis - avg * sell_size)
-            self.state.bankroll += decision.ask_price * sell_size + pnl
+            self.state.bankroll += state.open_ask.price * sell_size
+            self._candle_sell_count += 1
             LOG.info(
-                "SELL_FILLED %s sold=%s bought_avg=%s size=%s spread=%s pnl=%s",
+                "ACTION SELL %s sold=%s bought_avg=%s size=%s spread=%s pnl=%s bankroll=%s",
                 side_name.upper(),
-                decision.ask_price,
+                state.open_ask.price,
                 round(avg, 4),
                 sell_size,
-                round(decision.ask_price - avg, 4),
+                round(state.open_ask.price - avg, 4),
                 round(pnl, 4),
+                round(self.state.bankroll, 4),
             )
             state.open_ask = None
 
@@ -289,10 +305,12 @@ class LifecycleEngine:
             if not self.state.candle.active:
                 continue
             if abs(self.state.up_state.position) > self.settings.max_inventory:
+                LOG.warning("RISK overfill_detected side=UP position=%s", round(self.state.up_state.position, 4))
                 if self.state.up_state.open_bid:
                     self.execution.cancel_order(self.state.up_state.open_bid.order_id)
                     self.state.up_state.open_bid = None
             if abs(self.state.down_state.position) > self.settings.max_inventory:
+                LOG.warning("RISK overfill_detected side=DOWN position=%s", round(self.state.down_state.position, 4))
                 if self.state.down_state.open_bid:
                     self.execution.cancel_order(self.state.down_state.open_bid.order_id)
                     self.state.down_state.open_bid = None
@@ -312,7 +330,7 @@ class LifecycleEngine:
             self.state.down_state.position = 0.0
             self.state.down_state.cost_basis = 0.0
         self.state.candle.active = False
-        LOG.info("positions_flattened market=%s", candle.market.question)
+        LOG.info("RISK positions_flattened market='%s'", candle.market.question)
 
     @staticmethod
     def _mid_price(best_bid: float, best_ask: float) -> float:
@@ -362,6 +380,31 @@ class LifecycleEngine:
                 size,
                 trade_id,
             )
+
+    def _maybe_log_status(self, candle: CandleState) -> None:
+        now = time.time()
+        if now - self._last_status_log_ts < self._status_log_seconds:
+            return
+        self._last_status_log_ts = now
+        elapsed = int(now - candle.candle_start)
+        remaining = max(0, self.settings.exit_deadline_sec - elapsed)
+        up_bid = round(self.market_data.books.up.best_bid, 4)
+        up_ask = round(self.market_data.books.up.best_ask, 4)
+        down_bid = round(self.market_data.books.down.best_bid, 4)
+        down_ask = round(self.market_data.books.down.best_ask, 4)
+        LOG.info(
+            "STATUS t_left=%ss model=%s conf=%s UP=%s/%s DOWN=%s/%s inv_up=%s inv_down=%s bankroll=%s",
+            remaining,
+            candle.ml_direction,
+            round(candle.ml_confidence, 3),
+            up_bid,
+            up_ask,
+            down_bid,
+            down_ask,
+            round(self.state.up_state.position, 4),
+            round(self.state.down_state.position, 4),
+            round(self.state.bankroll, 4),
+        )
 
     @staticmethod
     def _quantize_price(price: float, tick_size: str, direction: str) -> float:

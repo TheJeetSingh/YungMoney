@@ -138,7 +138,12 @@ class LifecycleEngine:
                 await self._flatten_positions()
                 continue
 
-            self.market_data.refresh_books(candle.market)
+            # Prefer WS book updates; fall back to REST refresh only when stale/disconnected.
+            now = time.time()
+            up_age = now - self.market_data.books.up.last_update_ts if self.market_data.books.up.last_update_ts else 999
+            down_age = now - self.market_data.books.down.last_update_ts if self.market_data.books.down.last_update_ts else 999
+            if (not self.market_data.books.ws_connected) or up_age > 2 or down_age > 2:
+                self.market_data.refresh_books(candle.market)
             health = check_health(
                 ws_ok=self.market_data.books.ws_connected,
                 last_data_ts=min(
@@ -195,18 +200,33 @@ class LifecycleEngine:
             return
 
         token_id = candle.market.up_token if side_name == "up" else candle.market.down_token
-        await self._replace_quotes(side_name, side_state, token_id, decision)
+        await self._replace_quotes(
+            side_name,
+            side_state,
+            token_id,
+            candle.market.tick_size if candle.market else "0.01",
+            decision,
+        )
         if self.execution.paper:
             self._simulate_paper_fills(side_name, side_state, book, decision)
 
-    async def _replace_quotes(self, side_name: str, state: SideState, token_id: str, decision: QuoteDecision) -> None:
+    async def _replace_quotes(
+        self,
+        side_name: str,
+        state: SideState,
+        token_id: str,
+        tick_size: str,
+        decision: QuoteDecision,
+    ) -> None:
         if state.open_bid:
             self.execution.cancel_order(state.open_bid.order_id)
         if state.open_ask:
             self.execution.cancel_order(state.open_ask.order_id)
 
-        bid_quote = Quote(side="BUY", token_id=token_id, price=decision.bid_price, size=decision.bid_size)
-        ask_quote = Quote(side="SELL", token_id=token_id, price=decision.ask_price, size=decision.ask_size)
+        bid_price = self._quantize_price(decision.bid_price, tick_size, "down")
+        ask_price = self._quantize_price(decision.ask_price, tick_size, "up")
+        bid_quote = Quote(side="BUY", token_id=token_id, price=bid_price, size=decision.bid_size)
+        ask_quote = Quote(side="SELL", token_id=token_id, price=ask_price, size=decision.ask_size)
 
         bid_result = self.execution.place_post_only(bid_quote)
         ask_result = self.execution.place_post_only(ask_quote)
@@ -219,8 +239,8 @@ class LifecycleEngine:
             LOG.info(
                 "QUOTE_POSTED %s bid=%s ask=%s bid_size=%s ask_size=%s",
                 side_name.upper(),
-                decision.bid_price,
-                decision.ask_price,
+                bid_price,
+                ask_price,
                 decision.bid_size,
                 decision.ask_size,
             )
@@ -342,3 +362,20 @@ class LifecycleEngine:
                 size,
                 trade_id,
             )
+
+    @staticmethod
+    def _quantize_price(price: float, tick_size: str, direction: str) -> float:
+        try:
+            tick = float(tick_size)
+        except Exception:
+            tick = 0.01
+        if tick <= 0:
+            tick = 0.01
+        steps = price / tick
+        if direction == "up":
+            q = math.ceil(steps) * tick
+        else:
+            q = math.floor(steps) * tick
+        q = max(0.01, min(0.99, q))
+        decimals = max(2, len(str(tick).split(".")[-1]) if "." in str(tick) else 2)
+        return round(q, min(decimals, 4))

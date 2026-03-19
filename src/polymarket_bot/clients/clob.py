@@ -42,7 +42,11 @@ class ClobExecutionClient:
                 side=side,
             )
             signed = self._client.create_order(order)
-            resp = self._client.post_order(signed, OrderType.GTC)
+            try:
+                # Prefer post-only submission when supported by installed client version.
+                resp = self._client.post_order(signed, OrderType.GTC, True)
+            except TypeError:
+                resp = self._client.post_order(signed, OrderType.GTC)
             oid = resp.get("orderID") or resp.get("id") or ""
             status = resp.get("status", "")
             return OrderResult(ok=bool(oid or status in {"live", "matched"}), order_id=oid, status=status, raw=resp)

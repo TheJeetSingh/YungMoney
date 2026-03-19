@@ -98,6 +98,8 @@ class MarketDataClient:
             payload = response.json()
             bids = [(float(level["price"]), float(level["size"])) for level in payload.get("bids", [])]
             asks = [(float(level["price"]), float(level["size"])) for level in payload.get("asks", [])]
+            bids.sort(key=lambda x: x[0], reverse=True)
+            asks.sort(key=lambda x: x[0])
             best_bid = bids[0][0] if bids else 0.0
             best_ask = asks[0][0] if asks else 1.0
             return BookState(

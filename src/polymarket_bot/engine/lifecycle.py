@@ -6,10 +6,12 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from polymarket_bot.clients.clob import ClobExecutionClient
 from polymarket_bot.clients.market_data import MarketDataClient
 from polymarket_bot.config import Settings
+from polymarket_bot.ml.predictor import LegacySegmentPredictor
 from polymarket_bot.risk.controls import CircuitBreaker, DrawdownGuard, check_health
 from polymarket_bot.strategy.avellaneda import AvellanedaStoikov, QuoteDecision, QuoteParams
 from polymarket_bot.types import CandleState, Quote, SideState
@@ -38,10 +40,12 @@ class LifecycleEngine:
         settings: Settings,
         market_data: MarketDataClient,
         execution: ClobExecutionClient,
+        predictor: LegacySegmentPredictor | None = None,
     ) -> None:
         self.settings = settings
         self.market_data = market_data
         self.execution = execution
+        self.predictor = predictor or LegacySegmentPredictor(Path("hw-utils-archive/models"))
         self.strategy = AvellanedaStoikov(
             QuoteParams(max_inventory=settings.max_inventory),
         )
@@ -99,12 +103,16 @@ class LifecycleEngine:
         self.state.last_mid_up = None
         self.state.last_mid_down = None
         self.market_data.refresh_books(market)
-        self.state.candle.ml_direction, self.state.candle.ml_confidence = self._derive_direction_bias()
+        prediction = self.predictor.predict_for_candle(candle_start)
+        self.state.candle.ml_direction = prediction.direction
+        self.state.candle.ml_confidence = prediction.confidence
         await self.market_data.start_market_ws(market)
         LOG.info(
-            "new_candle market=%s start=%s",
+            "new_candle market=%s start=%s ml_direction=%s ml_conf=%s",
             market.question,
             datetime.fromtimestamp(candle_start, tz=timezone.utc).isoformat(),
+            self.state.candle.ml_direction,
+            round(self.state.candle.ml_confidence, 4),
         )
 
     async def _quote_loop(self) -> None:
@@ -249,17 +257,6 @@ class LifecycleEngine:
         if best_bid <= 0 or best_ask <= 0:
             return 0.0
         return (best_bid + best_ask) / 2.0
-
-    def _derive_direction_bias(self) -> tuple[str, float]:
-        up_mid = self._mid_price(self.market_data.books.up.best_bid, self.market_data.books.up.best_ask)
-        down_mid = self._mid_price(self.market_data.books.down.best_bid, self.market_data.books.down.best_ask)
-        if up_mid <= 0 or down_mid <= 0:
-            return "UP", 0.05
-        if up_mid == down_mid:
-            return "UP", 0.05
-        direction = "UP" if up_mid > down_mid else "DOWN"
-        confidence = min(abs(up_mid - down_mid), 0.2)
-        return direction, confidence
 
     def _update_sigma(self, side_name: str, mid: float) -> None:
         alpha = 0.1

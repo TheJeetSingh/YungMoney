@@ -4,3 +4,5 @@ websockets
 numpy
 pandas
 python-dotenv
+lightgbm
+scikit-learn

@@ -4,4 +4,6 @@ venv/
 __pycache__/
 *.pyc
 generated_api_creds.json
-hw-utils-archive/
+hw-utils-archive/*
+!hw-utils-archive/models/
+!hw-utils-archive/models/**

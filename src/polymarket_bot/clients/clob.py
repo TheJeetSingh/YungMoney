@@ -125,3 +125,18 @@ class ClobExecutionClient:
             return []
         except Exception:
             return []
+
+    def get_collateral_balance(self) -> float | None:
+        if self.paper or self._client is None:
+            return None
+        method = getattr(self._client, "get_balance_allowance", None)
+        if method is None:
+            return None
+        try:
+            payload = method({"asset_type": "COLLATERAL"})
+            balance = payload.get("balance") if isinstance(payload, dict) else None
+            if balance is None:
+                return None
+            return float(balance)
+        except Exception:
+            return None

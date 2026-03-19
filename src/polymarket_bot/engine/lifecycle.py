@@ -49,16 +49,24 @@ class LifecycleEngine:
         self.strategy = AvellanedaStoikov(
             QuoteParams(max_inventory=settings.max_inventory),
         )
+        resolved_start_bankroll = settings.bankroll_usd
+        live_balance = execution.get_collateral_balance()
+        if live_balance is not None:
+            resolved_start_bankroll = live_balance
+            LOG.info("resolved_live_collateral_balance=%s", round(live_balance, 4))
+        elif execution.paper:
+            resolved_start_bankroll = settings.bankroll_usd
         self.state = EngineState(
             candle=CandleState(),
             up_state=SideState(),
             down_state=SideState(),
-            bankroll=settings.bankroll_usd,
+            bankroll=resolved_start_bankroll,
         )
         self.breaker = CircuitBreaker(settings.max_consecutive_post_fails)
-        self.drawdown = DrawdownGuard(settings.bankroll_usd, settings.max_daily_drawdown_pct)
+        self.drawdown = DrawdownGuard(resolved_start_bankroll, settings.max_daily_drawdown_pct)
         self._shutdown = False
         self._seen_trade_ids: set[str] = set()
+        self._min_equity_floor = resolved_start_bankroll * settings.min_equity_floor_pct
 
     async def run(self) -> None:
         LOG.info("engine_started mode=%s", self.settings.bot_mode)
@@ -148,6 +156,14 @@ class LifecycleEngine:
             if self.drawdown.should_pause(self.state.bankroll):
                 self.execution.cancel_all()
                 LOG.error("daily_drawdown_guard_triggered bankroll=%s", self.state.bankroll)
+                continue
+            if self.state.bankroll < self._min_equity_floor:
+                self.execution.cancel_all()
+                LOG.error(
+                    "equity_floor_triggered bankroll=%s floor=%s",
+                    round(self.state.bankroll, 4),
+                    round(self._min_equity_floor, 4),
+                )
                 continue
 
             await self._quote_side("up")

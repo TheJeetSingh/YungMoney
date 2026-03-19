@@ -67,11 +67,14 @@ class LegacySegmentPredictor:
         if df is None or df.empty:
             return Prediction(direction="UP", confidence=0.0, prob_up=0.5)
         df = engineer_features(df)
-        present_cols = [col for col in self.feature_cols if col in df.columns]
-        if not present_cols:
+        if not self.feature_cols:
             return Prediction(direction="UP", confidence=0.0, prob_up=0.5)
-        df[present_cols] = df[present_cols].fillna(0).replace([np.inf, -np.inf], 0)
-        row = df.iloc[-1:][present_cols]
+        # Keep legacy model shape exactly: add any missing training columns as zeros.
+        for col in self.feature_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+        df[self.feature_cols] = df[self.feature_cols].fillna(0).replace([np.inf, -np.inf], 0)
+        row = df.iloc[-1:][self.feature_cols]
         try:
             prob_up = float(model.predict_proba(row)[0, 1])
         except Exception as exc:

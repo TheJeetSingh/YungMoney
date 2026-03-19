@@ -13,10 +13,12 @@ from polymarket_bot.logging_utils import configure_logging
 
 def _startup_log(settings) -> None:
     logging.getLogger(__name__).info(
-        "bot_startup mode=%s signature_type=%s funder=%s",
+        "bot_startup mode=%s signature_type=%s funder=%s bankroll_cfg=%s floor_pct=%s",
         settings.bot_mode,
         settings.signature_type,
         settings.funder_address or "unset",
+        settings.bankroll_usd,
+        settings.min_equity_floor_pct,
     )
 
 

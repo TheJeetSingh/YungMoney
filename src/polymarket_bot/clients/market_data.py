@@ -169,22 +169,25 @@ class MarketDataClient:
         target = self.books.up if asset_id == market.up_token else self.books.down
 
         if isinstance(bids, list):
-            target.bids = self._normalize_levels(bids)
+            target.bids = self._normalize_levels(bids, side="bids")
             target.best_bid = target.bids[0][0] if target.bids else target.best_bid
         if isinstance(asks, list):
-            target.asks = self._normalize_levels(asks)
+            target.asks = self._normalize_levels(asks, side="asks")
             target.best_ask = target.asks[0][0] if target.asks else target.best_ask
         target.last_update_ts = time.time()
 
     @staticmethod
-    def _normalize_levels(levels: list[dict]) -> list[tuple[float, float]]:
+    def _normalize_levels(levels: list[dict], side: str) -> list[tuple[float, float]]:
         normalized = []
         for level in levels:
             try:
                 normalized.append((float(level["price"]), float(level["size"])))
             except (TypeError, KeyError, ValueError):
                 continue
-        normalized.sort(key=lambda x: x[0], reverse=True)
+        if side == "bids":
+            normalized.sort(key=lambda x: x[0], reverse=True)
+        else:
+            normalized.sort(key=lambda x: x[0])
         return normalized
 
     @staticmethod

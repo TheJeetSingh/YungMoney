@@ -26,6 +26,7 @@ class Settings:
     max_consecutive_post_fails: int
     stale_data_seconds: int
     market_tag: str
+    min_equity_floor_pct: float
 
     @property
     def is_live(self) -> bool:
@@ -58,6 +59,7 @@ def load_settings() -> Settings:
         max_consecutive_post_fails=int(_get_env("MAX_CONSECUTIVE_POST_FAILS", "8")),
         stale_data_seconds=int(_get_env("STALE_DATA_SECONDS", "5")),
         market_tag=_get_env("MARKET_TAG", "crypto"),
+        min_equity_floor_pct=float(_get_env("MIN_EQUITY_FLOOR_PCT", "0.75")),
     )
 
 

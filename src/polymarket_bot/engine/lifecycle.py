@@ -72,6 +72,7 @@ class LifecycleEngine:
         self._candle_buy_count = 0
         self._candle_sell_count = 0
         self._candle_start_bankroll = resolved_start_bankroll
+        self._last_risk_log_ts = 0.0
 
     async def run(self) -> None:
         LOG.info("engine_started mode=%s", self.settings.bot_mode)
@@ -179,15 +180,11 @@ class LifecycleEngine:
 
             if self.drawdown.should_pause(self.state.bankroll):
                 self.execution.cancel_all()
-                LOG.error("RISK STOP | daily drawdown hit | bankroll=%s", round(self.state.bankroll, 4))
+                self._log_risk_stop("daily drawdown hit")
                 continue
             if self.state.bankroll < self._min_equity_floor:
                 self.execution.cancel_all()
-                LOG.error(
-                    "RISK STOP | equity floor hit | bankroll=%s floor=%s",
-                    round(self.state.bankroll, 4),
-                    round(self._min_equity_floor, 4),
-                )
+                self._log_risk_stop(f"equity floor hit floor={round(self._min_equity_floor, 4)}")
                 continue
 
             await self._quote_side("up")
@@ -246,8 +243,16 @@ class LifecycleEngine:
 
         bid_price = self._quantize_price(decision.bid_price, tick_size, "down")
         ask_price = self._quantize_price(decision.ask_price, tick_size, "up")
-        bid_quote = Quote(side="BUY", token_id=token_id, price=bid_price, size=decision.bid_size)
-        ask_quote = Quote(side="SELL", token_id=token_id, price=ask_price, size=decision.ask_size)
+        max_affordable_size = self._max_affordable_size(bid_price)
+        bid_size = min(decision.bid_size, max_affordable_size)
+        ask_size = decision.ask_size
+        if bid_size < 1:
+            # No buying power for this side right now.
+            state.open_bid = None
+            state.open_ask = None
+            return
+        bid_quote = Quote(side="BUY", token_id=token_id, price=bid_price, size=bid_size)
+        ask_quote = Quote(side="SELL", token_id=token_id, price=ask_price, size=ask_size)
 
         bid_result = self.execution.place_post_only(bid_quote)
         ask_result = self.execution.place_post_only(ask_quote)
@@ -265,8 +270,12 @@ class LifecycleEngine:
         LOG.error("quote_post_failed bid_ok=%s ask_ok=%s", bid_result.ok, ask_result.ok)
 
     def _simulate_paper_fills(self, side_name: str, state: SideState, book, decision: QuoteDecision) -> None:
+        if not self._book_is_sane(book):
+            return
         if state.open_bid and book.best_ask <= state.open_bid.price:
             fill_cost = state.open_bid.price * state.open_bid.size
+            if fill_cost > self.state.bankroll:
+                return
             state.position += state.open_bid.size
             state.cost_basis += fill_cost
             self.state.bankroll -= fill_cost
@@ -439,3 +448,27 @@ class LifecycleEngine:
         q = max(0.01, min(0.99, q))
         decimals = max(2, len(str(tick).split(".")[-1]) if "." in str(tick) else 2)
         return round(q, min(decimals, 4))
+
+    @staticmethod
+    def _book_is_sane(book) -> bool:
+        if book.best_bid <= 0 or book.best_ask <= 0:
+            return False
+        if book.best_ask < book.best_bid:
+            return False
+        # Ignore obviously broken one-tick anomalies in paper simulation.
+        if book.best_ask <= 0.01 and book.best_bid >= 0.4:
+            return False
+        return True
+
+    def _max_affordable_size(self, buy_price: float) -> float:
+        if buy_price <= 0:
+            return 0.0
+        # Keep 5% buffer so paper/live never overdraws bankroll.
+        return max(0.0, (self.state.bankroll * 0.95) / buy_price)
+
+    def _log_risk_stop(self, reason: str) -> None:
+        now = time.time()
+        if now - self._last_risk_log_ts < 5:
+            return
+        self._last_risk_log_ts = now
+        LOG.error("RISK STOP | %s | bankroll=%s", reason, round(self.state.bankroll, 4))

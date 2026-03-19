@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 
@@ -14,6 +15,8 @@ from polymarket_bot.types import BookState, MarketInfo
 LOG = logging.getLogger(__name__)
 
 MARKET_WS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+TARGET_SLUG_PREFIX = "btc-updown-5m"
+TARGET_QUESTION_PATTERN = re.compile(r"bitcoin up or down.*(5m|5 min|5-minute)", re.IGNORECASE)
 
 
 @dataclass
@@ -56,7 +59,8 @@ class MarketDataClient:
             markets = resp.json()
             for market in markets:
                 question = market.get("question", "")
-                if "Bitcoin Up or Down" not in question:
+                slug = str(market.get("slug", "")).lower()
+                if not self._is_target_market(question, slug):
                     continue
                 tokens = market.get("clobTokenIds", [])
                 outcomes = market.get("outcomes", [])
@@ -182,3 +186,9 @@ class MarketDataClient:
                 continue
         normalized.sort(key=lambda x: x[0], reverse=True)
         return normalized
+
+    @staticmethod
+    def _is_target_market(question: str, slug: str) -> bool:
+        if slug.startswith(TARGET_SLUG_PREFIX):
+            return True
+        return bool(TARGET_QUESTION_PATTERN.search(question or ""))
